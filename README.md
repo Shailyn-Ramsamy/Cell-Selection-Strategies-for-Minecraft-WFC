@@ -44,4 +44,4 @@ This repository contains the implementation of the research study **"Determining
    python build_house.py
 5. Input strategy, position, and dimensions
 
-![Wave Function Collapse Demo](wfcdemo.gif)
+![Wave Function Collapse Demo](https://github.com/Shailyn-Ramsamy/Cell-Selection-Strategies-for-Minecraft-WFC/blob/main/wfcdemo.gif)
