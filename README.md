@@ -15,7 +15,7 @@ This repository contains the implementation of the research study **"Determining
   - Vertical Coherence
   - Pattern Distribution Regularity
 - **Key Findings**:
-  - Each strategy has unique strengths tailored to different architectural goals.
+  - Each strategy has unique traits but were also constrained due to the limited tile set.
   - Entropy-based strategies provide balance and adaptability.
   - Height-priority strategies ensure structural stability.
   - Center-based approaches create symmetrical designs.
