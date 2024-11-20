@@ -43,3 +43,5 @@ This repository contains the implementation of the research study **"Determining
    ```bash
    python build_house.py
 5. Input strategy, position, and dimensions
+
+![Wave Function Collapse Demo](wfcdemo.gif)
