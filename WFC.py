@@ -4,6 +4,8 @@ from collections import defaultdict
 from gdpc import Editor, Block, Transform
 from glm import ivec3
 from typing import Dict, List, Tuple
+import pickle
+import math
 
 from structures import (
     corner_entrance_top, corner_entrance, corner_entrance_corner, corner_entrance_front, inner_corner_front, inner_corner_top, inner_corner_bottom, 
@@ -17,24 +19,22 @@ from structure import Structure, load_structure, build_structure
 
 class CellSelectionStrategy:
     @staticmethod
-    def select_by_collapsed_neighbors(grid, candidates):
+    def select_by_entropy(grid, candidates):
         """
-        Classic selection strategy that prefers cells with more collapsed neighbors.
-        Creates more structured, continuous builds.
+        Original WFC entropy-based selection strategy that chooses the cell 
+        with the lowest non-zero entropy, with small random noise to break ties.
+        Creates balanced, coherent structures.
         """
-        def count_collapsed_neighbors(x, y, z):
-            count = 0
-            for dx, dy, dz in [(0,1,0), (0,-1,0), (1,0,0), (-1,0,0), (0,0,1), (0,0,-1)]:
-                nx, ny, nz = x + dx, y + dy, z + dz
-                if (0 <= nx < len(grid[0][0]) and 
-                    0 <= ny < len(grid[0]) and 
-                    0 <= nz < len(grid)):
-                    if len(grid[nz][ny][nx]) == 1:
-                        count += 1
-            return count
+        def calculate_entropy(x, y, z):
+            cell = grid[z][y][x]
+            if len(cell) <= 1:  # Fully collapsed cells have 0 entropy
+                return float('inf')  # We want to ignore already collapsed cells
+            
+            # Add small random noise to break ties, as done in original WFC
+            return len(cell) + random.random() * 0.1
         
-        return max(candidates, key=lambda pos: count_collapsed_neighbors(*pos))
-
+        return min(candidates, key=lambda pos: calculate_entropy(*pos))
+    
     @staticmethod
     def select_by_height_priority(grid, candidates):
         """
@@ -60,48 +60,6 @@ class CellSelectionStrategy:
                    (z - center_z) ** 2) ** 0.5
         
         return min(candidates, key=distance_to_center)
-
-    @staticmethod
-    def select_from_corners(grid, candidates):
-        """
-        Prioritizes corner and edge cells.
-        Creates more complex, intricate structures with interesting corners.
-        """
-        max_x = len(grid[0][0]) - 1
-        max_y = len(grid[0]) - 1
-        max_z = len(grid) - 1
-        
-        def corner_priority(pos):
-            x, y, z = pos
-            # Calculate how close the position is to any corner
-            corner_distances = []
-            for corner_x in (0, max_x):
-                for corner_y in (0, max_y):
-                    for corner_z in (0, max_z):
-                        dist = ((x - corner_x) ** 2 + 
-                               (y - corner_y) ** 2 + 
-                               (z - corner_z) ** 2) ** 0.5
-                        corner_distances.append(dist)
-            return min(corner_distances)
-        
-        return min(candidates, key=corner_priority)
-
-    @staticmethod
-    def select_alternating_layers(grid, candidates):
-        """
-        Alternates between collapsing layers horizontally and vertically.
-        Creates interesting layered structures.
-        """
-        def get_layer_completion(pos):
-            x, y, z = pos
-            horizontal_layer = sum(1 for cell in grid[z][y] 
-                                 if len(cell) == 1)
-            vertical_layer = sum(1 for layer in grid 
-                               if len(layer[y][x]) == 1)
-            # Prefer the less complete layer
-            return min(horizontal_layer, vertical_layer)
-        
-        return min(candidates, key=get_layer_completion)
 
     @staticmethod
     def select_random_walk(grid, candidates, previous_pos=None):
@@ -243,6 +201,28 @@ class WFC3DBuilder:
                 if r <= cumulative_weight:
                     return structure
             return variants[-1][0]
+        
+    def get_valid_variations(self, module: str, z: int) -> List[int]:
+        """Returns valid variation indices based on module type and z coordinate"""
+        variations = list(range(len(self.structures[module])))
+        
+        if module == "air":
+            if z != 1:
+                return [0]
+            else:
+                return [i for i in variations if i != 0]
+        elif module in ["corner_mid_corner", "wall_mid_front", 
+                       "inner_corner_mid_front", "corner_mid_front"]:
+            if z % 2 == 0:
+                return [i for i in variations if i != 0]
+            else:
+                return [i for i in variations if i != 1]
+        
+        return variations
+        
+    def get_module_variations(self, module: str) -> int:
+        """Returns the number of variations available for a given module"""
+        return len(self.structures[module])
     
     def initialize_grid(self, width, height, depth):
         grid = [[[set() for _ in range(width)] for _ in range(height)] for _ in range(depth)]
@@ -250,29 +230,41 @@ class WFC3DBuilder:
         # Set bottom layer (z=0) to dirt
         for y in range(height):
             for x in range(width):
-                grid[0][y][x] = {('dirt', 0)}
+                grid[0][y][x] = {('dirt', 0, 0)}
         
         # Set top layer (z=depth-1) to air
         for y in range(height):
             for x in range(width):
-                grid[depth-1][y][x] = {('air', 0)}
+                grid[depth-1][y][x] = {('air', 0, 0)}
         
-        # Set middle layers to all possible modules, except on the edges
+        # Set middle layers with conditional variations
         for z in range(1, depth-1):
             for y in range(height):
                 for x in range(width):
                     if x == 0 or x == width - 1 or y == 0 or y == height - 1:
-                        grid[z][y][x] = {('air', 0)}
+                        valid_variations = self.get_valid_variations("air", z)
+                        grid[z][y][x] = {('air', 0, var) for var in valid_variations}
                     else:
-                        grid[z][y][x] = set((module, rotation) for module in self.all_modules for rotation in range(4))
+                        possible_states = set()
+                        for module in self.all_modules:
+                            valid_variations = self.get_valid_variations(module, z)
+                            for rotation in range(4):
+                                for variation in valid_variations:
+                                    possible_states.add((module, rotation, variation))
+                        grid[z][y][x] = possible_states
         
         return grid
     
-    def get_valid_neighbors(self, module, rotation, direction):
+    def get_valid_neighbors(self, module, rotation, variation, direction, z):
         valid_neighbors = set()
         if str(rotation) in self.adjacencies[module]:
             for neighbor in self.adjacencies[module][str(rotation)][direction]:
-                valid_neighbors.add((neighbor['structure'], neighbor['rotation']))
+                neighbor_module = neighbor['structure']
+                neighbor_rotation = neighbor['rotation']
+                # Only add valid variations for the z-coordinate
+                valid_variations = self.get_valid_variations(neighbor_module, z)
+                for var in valid_variations:
+                    valid_neighbors.add((neighbor_module, neighbor_rotation, var))
         return valid_neighbors
     
     def propagate(self, grid, x, y, z):
@@ -289,8 +281,9 @@ class WFC3DBuilder:
                 if 0 <= nx < len(grid[0][0]) and 0 <= ny < len(grid[0]) and 0 <= nz < len(grid):
                     neighbor_modules = grid[nz][ny][nx]
                     valid_neighbors = set()
-                    for module, rotation in current_modules:
-                        valid_neighbors.update(self.get_valid_neighbors(module, rotation, direction))
+                    for module, rotation, variation in current_modules:
+                        valid_neighbors.update(self.get_valid_neighbors(
+                            module, rotation, variation, direction, nz))
                     
                     new_neighbor_modules = neighbor_modules.intersection(valid_neighbors)
                     if new_neighbor_modules != neighbor_modules:
@@ -302,7 +295,7 @@ class WFC3DBuilder:
         min_entropy = float('inf')
         min_entropy_cells = []
         
-        for z in range(1, len(grid) - 1):  # Collapse all layers except the first and last
+        for z in range(1, len(grid) - 1):
             for y in range(len(grid[0])):
                 for x in range(len(grid[0][0])):
                     entropy = len(grid[z][y][x])
@@ -320,11 +313,37 @@ class WFC3DBuilder:
         options = grid[z][y][x].copy()
         stack.append((x, y, z, options))
         
-        chosen_module = random.choice(list(grid[z][y][x]))
-        grid[z][y][x] = {chosen_module}
+        # Choose a random option with weighted probability for valid variations
+        module_options = defaultdict(list)
+        for module, rotation, variation in grid[z][y][x]:
+            if variation in self.get_valid_variations(module, z):
+                module_options[(module, rotation)].append(variation)
+            
+        chosen_module, chosen_rotation = random.choice(list(module_options.keys()))
+        chosen_variation = self.select_weighted_variation(
+            chosen_module, z, module_options[(chosen_module, chosen_rotation)])
+        
+        grid[z][y][x] = {(chosen_module, chosen_rotation, chosen_variation)}
         self.propagate(grid, x, y, z)
         return True
-
+    
+    def select_weighted_variation(self, module: str, z: int, possible_variations: List[int]) -> int:
+        """Select a variation based on weights and z-coordinate constraints"""
+        valid_variations = self.get_valid_variations(module, z)
+        filtered_variations = [v for v in possible_variations if v in valid_variations]
+        
+        if not filtered_variations:
+            raise ValueError(f"No valid variations available for module {module} at z={z}")
+        
+        if len(filtered_variations) == 1:
+            return filtered_variations[0]
+            
+        variants = self.structures[module]
+        weights = [variants[var][1] for var in filtered_variations]
+        total_weight = sum(weights)
+        normalized_weights = [w/total_weight for w in weights]
+        
+        return random.choices(filtered_variations, weights=normalized_weights, k=1)[0]
     
     def is_fully_collapsed(self, grid):
         return all(len(cell) == 1 for layer in grid for row in layer for cell in row)
@@ -376,8 +395,8 @@ class WFC3DBuilder:
             row = []
             for cell in layer:
                 if len(cell) == 1:
-                    module, rotation = next(iter(cell))
-                    row.append(f"{module}:{rotation}")
+                    module, rotation, variation = next(iter(cell))
+                    row.append(f"{module}:{rotation}:{variation}")
                 else:
                     row.append("?")
             matrix.append(row)
@@ -385,56 +404,31 @@ class WFC3DBuilder:
 
     def print_2d_matrix(self, matrix):
         for row in matrix:
-            print(" ".join(f"{cell:20}" for cell in row))
+            print(" ".join(f"{cell:25}" for cell in row))
 
     def build_in_minecraft(self, editor: Editor, grid, start_pos: ivec3):
         for z, layer in enumerate(grid):
             for y, row in enumerate(layer):
                 for x, cell in enumerate(row):
                     if len(cell) == 1:
-                        module, rotation = next(iter(cell))
+                        module, rotation, variation = next(iter(cell))
                         if module in self.structures:
-                            
-                            structure = self.select_weighted_structure(module)
-                            
-                            if module == "air" and z != 1:
-                                structure = self.structures[module][0][0]
-                            elif module == "air" and z == 1:
-                                structure = self.select_weighted_structure(module, exclude_indices=[0])
-                            elif module == "corner_mid_corner" and z % 2 == 0:
-                                structure = self.select_weighted_structure(module, exclude_indices=[0])
-                            elif module == "corner_mid_corner" and z % 2 != 0:
-                                structure = self.select_weighted_structure(module, exclude_indices=[1])
-                            elif module == "wall_mid_front" and z % 2 == 0:
-                                structure = self.select_weighted_structure(module, exclude_indices=[0])
-                            elif module == "wall_mid_front" and z % 2 != 0:
-                                structure = self.select_weighted_structure(module, exclude_indices=[1])
-                            elif module == "inner_corner_mid_front" and z % 2 == 0:
-                                structure = self.select_weighted_structure(module, exclude_indices=[0])
-                            elif module == "inner_corner_mid_front" and z % 2 != 0:
-                                structure = self.select_weighted_structure(module, exclude_indices=[1])
-                            elif module == "corner_mid_front" and z % 2 == 0:
-                                structure = self.select_weighted_structure(module, exclude_indices=[0])
-                            elif module == "corner_mid_front" and z % 2 != 0:
-                                structure = self.select_weighted_structure(module, exclude_indices=[1])
-                                
-                            
-                                
+                            structure = self.structures[module][variation][0]
                             position = start_pos + ivec3(x * structure.size.x, z * structure.size.y, y * structure.size.z)
                             with editor.pushTransform(Transform(translation=position)):
                                 build_structure(editor, structure, rotation)
                                 
-    def generate_and_build(self, editor: Editor, width, height, depth, start_pos: ivec3):
+    def generate_grid(self, editor: Editor, width, height, depth, start_pos: ivec3):
         for attempt in range(self.max_attempts):
             print(f"Attempt {attempt + 1}/{self.max_attempts}")
             grid = self.generate(width, height, depth)
             if self.is_fully_collapsed(grid):
                 print(f"Successfully generated a valid structure on attempt {attempt + 1}")
-                self.build_in_minecraft(editor, grid, start_pos)
                 return grid
         
         print(f"Failed to generate a valid structure after {self.max_attempts} attempts")
         return None
+
     
 class EnhancedWFC3DBuilder(WFC3DBuilder):
     def __init__(self, adjacency_file, strategy='collapsed_neighbors'):
@@ -442,11 +436,9 @@ class EnhancedWFC3DBuilder(WFC3DBuilder):
         self.strategy = strategy
         self.previous_pos = None
         self.strategies = {
-            'collapsed_neighbors': CellSelectionStrategy.select_by_collapsed_neighbors,
+            'entropy': CellSelectionStrategy.select_by_entropy, 
             'height_priority': CellSelectionStrategy.select_by_height_priority,
             'from_center': CellSelectionStrategy.select_from_center,
-            'from_corners': CellSelectionStrategy.select_from_corners,
-            'alternating_layers': CellSelectionStrategy.select_alternating_layers,
             'random_walk': CellSelectionStrategy.select_random_walk
         }
 
@@ -463,27 +455,12 @@ class EnhancedWFC3DBuilder(WFC3DBuilder):
             
         return strategy_func(grid, candidates)
 
-# # Example usage:
-# builder = EnhancedWFC3DBuilder('adjacencies.json', strategy='random_walk')
-
-# # builder = WFC3DBuilder('adjacencies.json')
-# editor = Editor(buffering=True)
-
-# start_pos = ivec3(320, -60, 369)
-# result = builder.generate_and_build(editor, 15, 15, 15, start_pos) 
-
-# if result:
-#     print("2D Matrix representation of the generated structure:")
-#     for z, layer in enumerate(result):
-#         print(f"\nLayer {z}:")
-#         matrix = builder.get_2d_matrix(layer)
-#         builder.print_2d_matrix(matrix)
-# else:
-#     print("Failed to generate a valid structure")
-
-# if result:
-#     for z, layer in enumerate(result):
-#         print(f"\nLayer {z}:")
-#         print(builder.get_2d_matrix(layer))
-
-# editor.flushBuffer()
+def print_grid_sample(grid):
+    print("Grid Sample (first few elements):")
+    for z in range(min(2, len(grid))):  # First 2 layers
+        print(f"\nLayer {z}:")
+        for y in range(min(20, len(grid[0]))):  # First 2 rows
+            for x in range(min(5, len(grid[0][0]))):  # First 5 columns
+                cell = grid[z][y][x]
+                print(f"\nPosition (x={x}, y={y}, z={z}):")
+                print(f"Cell contents: {cell}")

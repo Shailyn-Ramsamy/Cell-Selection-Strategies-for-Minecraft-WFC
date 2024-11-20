@@ -37,23 +37,17 @@ def main():
     ED = Editor(buffering=True)
 
     try:
-        ED.transform @= Transform(translation=ivec3(0, 30, 60))
+        ED.transform @= Transform(translation=ivec3(341, -60, 200))
 
         structures = [
-            # load_structure(air),
-            # load_structure(air),
-            # load_structure(air),
-            # load_structure(air),
-            # load_structure(air),
-            # load_structure(air),
-            # load_structure(air),
-            # load_structure(air),
-            load_structure(corner_entrance_front),
-            load_structure(corner_entrance_corner),
-            load_structure(inner_corner_front),
-            load_structure(wall_front),
-            load_structure(wall_front_v2),
-            # load_structure(),
+            load_structure(wall_bottom),
+            load_structure(corner_entrance),
+            load_structure(wall_bottom),
+            load_structure(inner_corner_mid_front),
+            load_structure(corner_entrance_top),
+            load_structure(wall_top),
+            load_structure(corner_mid),
+            
         ]
 
         print("Building structure showcase")
